@@ -33,7 +33,6 @@ jobs:
           python3-docutils autopoint texinfo
         sudo apt-get clean
 
-
     - name: Run Compilation Logic
       run: |
         # =======================================================
@@ -69,7 +68,7 @@ jobs:
         git clone --depth=1 --branch $REPO_BRANCH $REPO_URL $WORK_DIR
         
         # =======================================================
-        # 3. 【全能修复包】针对 3.4 版本的核心修复
+        # 3. 【精准爆破】针对 3.4 版本的核心修复
         # =======================================================
         if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
             echo "Applying strict fixes for 3.4..."
@@ -86,7 +85,6 @@ jobs:
             fi
             
             # --- Fix 2: e2fsprogs (User) ---
-            # 屏蔽不支持的宏
             E2FS_CFG="$WORK_DIR/trunk/user/e2fsprogs/configure"
             if [ -f "$E2FS_CFG" ]; then
                 sed -i 's/AM_GNU_GETTEXT(external)/# AM_GNU_GETTEXT(external)/g' $E2FS_CFG
@@ -94,15 +92,14 @@ jobs:
                 touch $E2FS_CFG
             fi
 
-            # --- Fix 3: dropbear (User) --- [新增]
-            # 问题：configure 找不到 zlib
-            # 修复：在 Makefile 调用 configure 时，强制注入 CFLAGS 和 LDFLAGS
+            # --- Fix 3: dropbear (User) --- [关键修正]
+            # 问题：CC变量含有空格，导致 configure 参数解析错误
+            # 修复：给 $(CC) 加上双引号 -> CC="$(CC)"
             DROPBEAR_MK="$WORK_DIR/trunk/user/dropbear/Makefile"
             if [ -f "$DROPBEAR_MK" ]; then
-                echo "Patching dropbear Makefile to pass flags..."
-                # 将 ./configure 替换为 ./configure CC=$(CC) CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
-                # 使用 | 作为分隔符避免路径斜杠冲突
-                sed -i 's|./configure|./configure CC=$(CC) CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"|g' "$DROPBEAR_MK"
+                echo "Patching dropbear Makefile to pass flags correctly..."
+                # 注意这里：CC="$(CC)"
+                sed -i 's|./configure|./configure CC="$(CC)" CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"|g' "$DROPBEAR_MK"
             fi
         fi
 
@@ -139,7 +136,6 @@ jobs:
         cd $TOOLCHAIN_DIR
         sh dl_toolchain.sh
         
-        # 建立软链接
         echo "Setting up symlink for toolchain..."
         sudo mkdir -p /opt/rt-n56u
         sudo ln -sf "$TOOLCHAIN_DIR/toolchain-3.4.x" /opt/rt-n56u/toolchain-mipsel
@@ -158,48 +154,7 @@ jobs:
         echo "Customizing $TEMPLATE_PATH..."
         
         sed -i '/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD/d' $TEMPLATE_PATH
-        echo "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y" >> $TEMPLATE_PATH
-        
-        # 清理插件
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_ARIA/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_WGET/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_OPENVPN/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_TROJAN/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_V2RAY/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_XRAY/d' $TEMPLATE_PATH
-        sed -i '/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN/d' $TEMPLATE_PATH
-
-        cat <<EOF >> $TEMPLATE_PATH
-        CONFIG_FIRMWARE_INCLUDE_ARIA=n
-        CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n
-        CONFIG_FIRMWARE_INCLUDE_WGET=n
-        CONFIG_FIRMWARE_INCLUDE_OPENVPN=n
-        CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=n
-        CONFIG_FIRMWARE_INCLUDE_SSSERVER=n
-        CONFIG_FIRMWARE_INCLUDE_TROJAN=n
-        CONFIG_FIRMWARE_INCLUDE_V2RAY=n
-        CONFIG_FIRMWARE_INCLUDE_XRAY=n
-        CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER=n
-        EOF
-
-        # =======================================================
-        # 7. 开始编译 (分步构建)
-        # =======================================================
-        cp -f $TEMPLATE_PATH .config
-        
-        echo "Starting Pre-build (Libs)..."
-        export LC_ALL=C
-        
-        make clean
-        
-        # 1. 编译基础库 (Zlib等)
-        fakeroot make libs
-        
-        echo "Starting Full Build..."
-        # 2. 编译完整固件
-        fakeroot ./build_firmware $TARGET_PROFILE
+        echo "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y
         
     - name: Organize Artifacts
       run: |
