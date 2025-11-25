@@ -33,40 +33,6 @@ jobs:
           python3-docutils autopoint texinfo
         sudo apt-get clean
 
-    这个报错的含金量很高！它暴露了我们“手搓配置文件”时的一个致命疏忽。
-
-错误原因深度剖析
-make: option requires an argument -- 'C'
-
-真相：构建系统在执行 make -C <内核目录>。
-
-原因：<内核目录> 变量是空的！
-
-为什么：因为我们手写的 .config 文件里缺少了 CONFIG_LINUXDIR 这一行。构建系统不知道内核源码在哪里（是 linux-3.4.x 还是 linux-4.4.x），导致路径变量为空。
-
-make: /mipsel-linux-uclibc-gcc: No such file or directory
-
-真相：编译器路径变成了从根目录 / 开始。
-
-原因：通常 CROSS_COMPILE 变量是由 CONFIG_VENDOR 等变量推导出来的。如果配置文件里缺少了厂商定义（CONFIG_VENDOR=ralink），构建脚本的路径推导逻辑就会崩坏，导致它去根目录下找编译器。
-
-工具链路径兼容性：
-
-老旧的 hanwckf 源码非常顽固，它默认死磕 /opt/rt-n56u/toolchain-mipsel 这个路径。尽管我们设置了 PATH，但源码内部某些硬编码的脚本可能忽略了它。
-
-解决方案：V7.0 究极完整版
-这次我们要做三件大事：
-
-伪装工具链：直接在系统里创建 /opt/rt-n56u/toolchain-mipsel 软链接，骗过所有硬编码脚本。
-
-补全配置：在生成的配置中补全 CONFIG_VENDOR、CONFIG_PRODUCT 和 CONFIG_LINUXDIR，让构建系统能找到内核。
-
-保留所有修复：之前的 xz、e2fsprogs 修复继续保留。
-
-请完全替换你的 Run Compilation Logic。这一版是理论上最完美的修复。
-
-YAML
-
     - name: Run Compilation Logic
       run: |
         # =======================================================
