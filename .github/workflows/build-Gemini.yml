@@ -41,10 +41,14 @@ jobs:
         WORK_DIR="$GITHUB_WORKSPACE/padavan"
         mkdir -p $WORK_DIR
         
+        # 设定绝对路径，防止相对路径在切换目录时失效
+        TOOLCHAIN_DIR="$WORK_DIR/toolchain-mipsel"
+        # 关键修复：把工具链的 bin 目录加到系统 PATH
+        export PATH="$TOOLCHAIN_DIR/toolchain-3.4.x/bin:$PATH"
+        
         CURRENT_DATE=$(date +%Y%m%d)
         echo "DATE=$CURRENT_DATE" >> $GITHUB_ENV
         
-        # 判断版本并设置仓库
         if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
           REPO_URL="https://github.com/hanwckf/rt-n56u.git"
           REPO_BRANCH="master"
@@ -66,29 +70,21 @@ jobs:
         git clone --depth=1 --branch $REPO_BRANCH $REPO_URL $WORK_DIR
         
         # =======================================================
-        # 3. 【核弹级修复】针对 3.4 版本的兼容性处理
+        # 3. 【兼容性修复】针对 3.4 版本的处理
         # =======================================================
         if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
             echo "Applying strict fixes for 3.4..."
             
-            # --- Fix 1: xz-5.2.4 编译报错 (彻底移除 po) ---
-            # 之前的 sed 匹配失败了，这次我们直接暴力重写 SUBDIRS 变量。
-            # 原理：Makefile.in 里定义了要编译哪些子目录，我们强制让它只编译 src。
-            # 这样 make 根本就不会进入 po 目录，从而彻底根除错误。
+            # --- Fix 1: xz-5.2.4 (彻底移除 po) ---
             XZ_MAKEFILE="$WORK_DIR/trunk/tools/mksquashfs_xz/xz-5.2.4/Makefile.in"
             if [ -f "$XZ_MAKEFILE" ]; then
-                echo "Forcefully removing 'po' from xz build..."
-                # 使用 sed 匹配以 SUBDIRS 开头的行，并将其整行替换为 SUBDIRS = src
                 sed -i 's/^SUBDIRS =.*/SUBDIRS = src/g' "$XZ_MAKEFILE"
-                
-                # 双重保险：以防万一是在 Makefile 也可以改一下（虽然通常用不到）
                 sed -i 's/^SUBDIRS =.*/SUBDIRS = src/g' "$WORK_DIR/trunk/tools/mksquashfs_xz/xz-5.2.4/Makefile" 2>/dev/null || true
             fi
             
-            # --- Fix 2: e2fsprogs 编译报错 (AM_GNU_GETTEXT) ---
+            # --- Fix 2: e2fsprogs (configure) ---
             E2FS_CFG="$WORK_DIR/trunk/user/e2fsprogs/configure"
             if [ -f "$E2FS_CFG" ]; then
-                echo "Patching e2fsprogs/configure directly..."
                 sed -i 's/AM_GNU_GETTEXT(external)/# AM_GNU_GETTEXT(external)/g' $E2FS_CFG
                 sed -i 's/AM_GNU_GETTEXT_VERSION/# AM_GNU_GETTEXT_VERSION/g' $E2FS_CFG
                 touch $E2FS_CFG
@@ -96,13 +92,11 @@ jobs:
         fi
 
         # =======================================================
-        # 4. 【注入配置】无中生有，生成 Newifi3 配置文件
+        # 4. 【注入配置】生成 Newifi3 配置文件
         # =======================================================
         cd $WORK_DIR/trunk/configs/templates
         
         echo "Injecting Custom Config for $TARGET_PROFILE..."
-        
-        # 写入标准 Newifi3 D2 配置
         cat <<EOF > $TARGET_PROFILE.config
         CONFIG_FIRMWARE_PRODUCT_ID="NEWIFI3"
         CONFIG_FIRMWARE_CPU_MT7621=y
@@ -117,28 +111,46 @@ jobs:
         CONFIG_FIRMWARE_ENABLE_IPV6=y
         EOF
         
-        # 回到 trunk 目录
         cd $WORK_DIR/trunk
         TEMPLATE_PATH="configs/templates/$TARGET_PROFILE.config"
 
         # =======================================================
-        # 5. 准备 Toolchain
+        # 5. 准备 Toolchain (关键修复步骤)
         # =======================================================
         echo "Preparing Toolchain..."
-        cd $WORK_DIR/toolchain-mipsel
+        cd $TOOLCHAIN_DIR
+        # 下载并解压工具链
         sh dl_toolchain.sh
-        cd $WORK_DIR/trunk
+        
+        # --- 核心修复：检查并修正工具链路径 ---
+        echo "Verifying toolchain path..."
+        # 通常工具链会解压到 toolchain-3.4.x 目录
+        if [ ! -d "$TOOLCHAIN_DIR/toolchain-3.4.x/bin" ]; then
+            echo "ERROR: Toolchain bin directory not found!"
+            ls -R $TOOLCHAIN_DIR
+            exit 1
+        fi
+        
+        # 再次强制导出 PATH，确保在当前 shell 此时此刻生效
+        export PATH="$TOOLCHAIN_DIR/toolchain-3.4.x/bin:$PATH"
+        
+        # 验证 GCC 是否可用
+        if ! command -v mipsel-linux-uclibc-gcc &> /dev/null; then
+            echo "ERROR: Compiler not found in PATH!"
+            echo "Current PATH: $PATH"
+            exit 1
+        fi
+        echo "Compiler found: $(which mipsel-linux-uclibc-gcc)"
 
         # =======================================================
-        # 6. 修改配置 (插件净化与优化)
+        # 6. 修改配置
         # =======================================================
+        cd $WORK_DIR/trunk
         echo "Customizing $TEMPLATE_PATH..."
         
-        # 1. 确保 Flow Offload 开启
         sed -i '/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD/d' $TEMPLATE_PATH
         echo "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y" >> $TEMPLATE_PATH
         
-        # 2. 移除插件 (先删后加，防止重复)
         sed -i '/CONFIG_FIRMWARE_INCLUDE_ARIA/d' $TEMPLATE_PATH
         sed -i '/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION/d' $TEMPLATE_PATH
         sed -i '/CONFIG_FIRMWARE_INCLUDE_WGET/d' $TEMPLATE_PATH
@@ -163,11 +175,18 @@ jobs:
         EOF
 
         # =======================================================
-        # 7. 开始编译
+        # 7. 开始编译 (带环境修复)
         # =======================================================
         cp -f $TEMPLATE_PATH .config
         
         echo "Starting Build for $TARGET_PROFILE..."
+        
+        # 关键：手动清除可能干扰编译的语言变量
+        export LC_ALL=C
+        
+        # 使用 fakeroot 运行，并确保 PATH 传递进去
+        # 注意：这里我们不再只依赖 build_firmware 脚本内部的设置，
+        # 而是依赖我们在外部已经 export 好的正确 PATH。
         fakeroot ./build_firmware $TARGET_PROFILE
         
     - name: Organize Artifacts
