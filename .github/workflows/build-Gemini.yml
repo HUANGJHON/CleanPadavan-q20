@@ -33,22 +33,6 @@ jobs:
           python3-docutils autopoint texinfo
         sudo apt-get clean
 
-    这个报错的反复出现说明我们的“手术”还不够彻底。xz 的编译错误（mv: cannot stat 't-fr.gmo'）是由于 Ubuntu 22.04 的 gettext 工具链版本过新，导致旧版 xz 源码中的翻译文件生成失败。
-
-之前的修复尝试修改 Makefile.in 可能因为匹配规则不精确或者被 configure 脚本覆盖而失效。
-
-这一次，我们采用 V9.0 降维打击版。我们不光要修改文件，还要从编译参数层面直接关闭语言支持（NLS），这比修改文件更底层、更有效。
-
-核心修复逻辑
-参数禁用：在 xz 的配置命令中注入 --disable-nls。这是官方提供的标准开关，能直接告诉编译器：“根本不要碰 po 目录”。
-
-暴力截断：再次强化 Makefile.in 的修改逻辑，确保 SUBDIRS 变量被强制锁定为 src，不再包含 po。
-
-保留全套流程：保留之前的工具链路径修复、库文件预编译流程。
-
-请完全替换你的 Run Compilation Logic。
-
-YAML
 
     - name: Run Compilation Logic
       run: |
