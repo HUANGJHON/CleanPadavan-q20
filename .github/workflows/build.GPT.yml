@@ -1,4 +1,4 @@
-name: Build Newifi3 D2 Padavan 3.4 (Optimized)
+name: Build Newifi3 D2 Padavan 3.4 (GPT 5.1)
 
 on:
   workflow_dispatch:
