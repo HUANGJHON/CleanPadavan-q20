@@ -1,0 +1,320 @@
+name: Build Newifi3 D2 Padavan 3.4 (Optimized)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      LC_ALL: C
+      
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Maximize Build Space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo apt-get clean
+        df -h
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential gperf bison flex texinfo gawk \
+          libncurses5-dev libncurses5 libncursesw5 libncursesw5-dev \
+          zlib1g-dev liblzma-dev libgmp-dev libmpfr-dev libmpc-dev \
+          autoconf automake autopoint libtool-bin gettext pkg-config \
+          curl wget git rsync python3 python3-docutils \
+          fakeroot kmod cpio git-doc nano xxd vim-common
+        
+        # 针对Ubuntu 22.04修复GCC严格模式
+        sudo sed -i 's/-Werror=format-security//g' /usr/share/perl5/Debconf/Client/ConfModule.pm 2>/dev/null || true
+        
+        sudo apt-get clean
+        df -h
+
+    - name: Clone Padavan Source (hanwckf 3.4)
+      run: |
+        git clone --depth=1 https://github.com/hanwckf/rt-n56u.git padavan
+        echo "BUILD_DATE=$(date +%Y%m%d_%H%M)" >> $GITHUB_ENV
+
+    - name: Apply Critical Fixes for Ubuntu 22.04
+      run: |
+        cd padavan
+        
+        # ===========================
+        # Fix 1: XZ工具链 - 禁用NLS避免gettext版本冲突
+        # ===========================
+        MKSQ_MK="trunk/tools/mksquashfs_xz/Makefile"
+        if [ -f "$MKSQ_MK" ]; then
+          echo "Patching mksquashfs_xz Makefile..."
+          sed -i 's|./configure|./configure --disable-nls --disable-doc|g' "$MKSQ_MK"
+        fi
+        
+        XZ_MAKEFILE="trunk/tools/mksquashfs_xz/xz-5.2.4/Makefile.in"
+        if [ -f "$XZ_MAKEFILE" ]; then
+          echo "Disabling XZ subdirs except src..."
+          sed -i 's/^SUBDIRS.*/SUBDIRS = src/g' "$XZ_MAKEFILE"
+        fi
+        
+        # ===========================
+        # Fix 2: e2fsprogs - 移除GNU gettext宏
+        # ===========================
+        E2FS_CONFIGURE="trunk/user/e2fsprogs/configure"
+        if [ -f "$E2FS_CONFIGURE" ]; then
+          echo "Removing gettext from e2fsprogs..."
+          sed -i 's/AM_GNU_GETTEXT(external)/# AM_GNU_GETTEXT(external)/g' "$E2FS_CONFIGURE"
+          sed -i 's/AM_GNU_GETTEXT_VERSION/# AM_GNU_GETTEXT_VERSION/g' "$E2FS_CONFIGURE"
+          touch "$E2FS_CONFIGURE"
+        fi
+        
+        # ===========================
+        # Fix 3: Dropbear - 关键修复
+        # ===========================
+        DROPBEAR_MK="trunk/user/dropbear/Makefile"
+        if [ -f "$DROPBEAR_MK" ]; then
+          echo "Applying Dropbear Makefile fix..."
+          
+          # 移除autoreconf(Ubuntu 22.04版本太新)
+          sed -i 's/autoreconf.*;//g' "$DROPBEAR_MK"
+          
+          # 清理所有形式的CC=$(CC)参数传递
+          sed -i -E 's/(CC|CFLAGS|LDFLAGS)\s*=\s*\$\(\1\)//g' "$DROPBEAR_MK"
+          
+          # 使用环境变量导出方式(最稳定)
+          sed -i 's|^\([[:space:]]*\)\./configure|\1export CC="\$(CC)" CFLAGS="\$(CFLAGS)" LDFLAGS="\$(LDFLAGS)" LIBS="-lz -lcrypt"; ./configure|g' "$DROPBEAR_MK"
+          
+          echo "Dropbear configure line:"
+          grep -A2 "export CC" "$DROPBEAR_MK" || grep "./configure" "$DROPBEAR_MK"
+        fi
+        
+        # ===========================
+        # Fix 4: 全局GCC兼容性修复
+        # ===========================
+        # 为老旧代码添加宽松编译选项
+        find trunk/user -name "Makefile*" -o -name "*.mk" | while read mf; do
+          if grep -q "CFLAGS.*-Werror" "$mf" 2>/dev/null; then
+            sed -i 's/-Werror[^ ]*//g' "$mf"
+          fi
+        done
+
+    - name: Setup Toolchain
+      run: |
+        cd padavan/toolchain-mipsel
+        
+        echo "Downloading toolchain..."
+        sh dl_toolchain.sh
+        
+        if [ ! -f "toolchain-3.4.x/bin/mipsel-linux-uclibc-gcc" ]; then
+          echo "ERROR: Toolchain download failed!"
+          exit 1
+        fi
+        
+        # 创建标准路径符号链接
+        sudo mkdir -p /opt/rt-n56u
+        sudo ln -sf "$(pwd)/toolchain-3.4.x" /opt/rt-n56u/toolchain-mipsel
+        
+        # 验证工具链
+        export PATH="/opt/rt-n56u/toolchain-mipsel/bin:$PATH"
+        
+        if ! mipsel-linux-uclibc-gcc --version; then
+          echo "ERROR: Toolchain verification failed!"
+          exit 1
+        fi
+        
+        echo "Toolchain ready: $(mipsel-linux-uclibc-gcc --version | head -n1)"
+
+    - name: Configure Firmware Template
+      run: |
+        cd padavan/trunk/configs/templates
+        
+        TARGET="NEWIFI3"
+        
+        # 生成完整配置文件
+        cat > "${TARGET}.config" <<EOF
+        # 基础配置
+        CONFIG_VENDOR=ralink
+        CONFIG_PRODUCT=MT7621
+        CONFIG_LINUXDIR=linux-3.4.x
+        
+        # 硬件规格
+        CONFIG_FIRMWARE_PRODUCT_ID="NEWIFI3"
+        CONFIG_FIRMWARE_CPU_MT7621=y
+        CONFIG_FIRMWARE_MEMORY_512M=y
+        CONFIG_FIRMWARE_FLASH_32M=y
+        
+        # 核心功能
+        CONFIG_FIRMWARE_ENABLE_USB=y
+        CONFIG_FIRMWARE_INCLUDE_HTTPS=y
+        CONFIG_FIRMWARE_INCLUDE_SFTP=y
+        CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y
+        
+        # WiFi驱动
+        CONFIG_FIRMWARE_WIFI2_DRIVER=3.0
+        CONFIG_FIRMWARE_WIFI5_DRIVER=3.0
+        
+        # 网络优化
+        CONFIG_FIRMWARE_ENABLE_IPV6=y
+        CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y
+        
+        # 禁用插件(纯净版)
+        CONFIG_FIRMWARE_INCLUDE_ARIA=n
+        CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n
+        CONFIG_FIRMWARE_INCLUDE_WGET=n
+        CONFIG_FIRMWARE_INCLUDE_OPENVPN=n
+        CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=n
+        CONFIG_FIRMWARE_INCLUDE_SSSERVER=n
+        CONFIG_FIRMWARE_INCLUDE_TROJAN=n
+        CONFIG_FIRMWARE_INCLUDE_V2RAY=n
+        CONFIG_FIRMWARE_INCLUDE_XRAY=n
+        CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER=n
+        CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CLIENT=n
+        EOF
+        
+        echo "Configuration created for $TARGET"
+
+    - name: Build Firmware
+      run: |
+        cd padavan/trunk
+        
+        export PATH="/opt/rt-n56u/toolchain-mipsel/bin:$PATH"
+        export LC_ALL=C
+        export CFLAGS="-O2 -pipe"
+        
+        # 复制配置
+        cp -f configs/templates/NEWIFI3.config .config
+        
+        echo "======================================"
+        echo "Starting Clean Build Process"
+        echo "======================================"
+        
+        # 清理
+        make clean
+        
+        # 分阶段编译(关键)
+        echo ">>> Stage 1: Building toolchain dependencies..."
+        fakeroot make toolchain || {
+          echo "ERROR: Toolchain build failed"
+          exit 1
+        }
+        
+        echo ">>> Stage 2: Building libraries..."
+        fakeroot make libs || {
+          echo "ERROR: Library compilation failed"
+          tail -n 100 /tmp/*.log 2>/dev/null || true
+          exit 1
+        }
+        
+        echo ">>> Stage 3: Building firmware..."
+        fakeroot ./build_firmware_modify NEWIFI3 0
+        
+        # 检查输出
+        if [ ! -f "images/"*.trx ]; then
+          echo "ERROR: Firmware build failed - no .trx file generated"
+          find images -type f
+          exit 1
+        fi
+        
+        echo "======================================"
+        echo "Build Success!"
+        ls -lh images/*.trx
+        echo "======================================"
+
+    - name: Prepare Release Files
+      run: |
+        mkdir -p release
+        
+        # 复制固件
+        cp padavan/trunk/images/*.trx release/
+        
+        # 重命名为标准格式
+        cd release
+        for file in *.trx; do
+          mv "$file" "Newifi3_Padavan_3.4_${{ env.BUILD_DATE }}.trx"
+        done
+        
+        # 生成校验和
+        sha256sum *.trx > sha256sum.txt
+        
+        # 生成说明文件
+        cat > README.txt <<EOF
+        固件信息
+        ========================================
+        设备型号: Newifi3 D2 (NEWIFI3)
+        固件版本: Padavan 3.4 (hanwckf)
+        内核版本: Linux 3.4.x
+        编译时间: ${{ env.BUILD_DATE }}
+        编译环境: Ubuntu 22.04
+        
+        功能特性
+        ========================================
+        - 硬件流量加速(Flow Offload)已启用
+        - IPv6 原生支持
+        - SSH/SFTP/HTTPS 已启用
+        - 纯净版(无第三方代理插件)
+        
+        刷机方法
+        ========================================
+        1. 登录路由器Web界面
+        2. 进入"系统管理" -> "固件升级"
+        3. 选择.trx文件上传
+        4. 等待自动重启完成
+        
+        注意事项
+        ========================================
+        - 首次刷机建议勾选"清除配置"
+        - 默认IP: 192.168.2.1
+        - 默认用户名/密码: admin/admin
+        EOF
+        
+        ls -lh
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ env.BUILD_DATE }}-padavan3.4
+        name: "Newifi3 Padavan 3.4 (${{ env.BUILD_DATE }})"
+        body: |
+          ## 📦 自动构建固件
+          
+          **设备型号**: Newifi3 D2  
+          **固件版本**: Padavan 3.4 (hanwckf/rt-n56u)  
+          **编译时间**: ${{ env.BUILD_DATE }}  
+          **编译环境**: Ubuntu 22.04 LTS  
+          
+          ### ✨ 特性
+          - ✅ 硬件流量加速 (Flow Offload)
+          - ✅ IPv6 原生支持
+          - ✅ SSH/SFTP/HTTPS
+          - ✅ 纯净版(无代理插件)
+          
+          ### 📥 使用方法
+          下载`.trx`文件，通过路由器Web界面上传刷机
+          
+          **默认访问**: http://192.168.2.1 (admin/admin)
+        files: |
+          release/*.trx
+          release/sha256sum.txt
+          release/README.txt
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Artifacts (Backup)
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: padavan-firmware-${{ env.BUILD_DATE }}
+        path: |
+          release/*.trx
+          release/*.txt
+        retention-days: 30
