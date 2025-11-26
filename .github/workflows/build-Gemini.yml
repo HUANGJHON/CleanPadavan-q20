@@ -1,4 +1,4 @@
-name: Build Newifi3 D2 Padavan (Final Fix)
+name: Build Newifi3 D2 Padavan (Fixed e2fsprogs)
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ jobs:
           nano xxd fakeroot kmod cpio git-doc vim-common \
           libncurses5-dev libncurses5 \
           python3-docutils autopoint texinfo \
-          libtirpc-dev automake autoconf
+          libtirpc-dev automake autoconf pkg-config gettext
         sudo apt-get clean
 
     - name: Run Compilation Logic
@@ -65,34 +65,32 @@ jobs:
         # 3. 【关键修复】针对 Ubuntu 22.04 的补丁集
         # =======================================================
         
-        # --- Fix A: 修复 xz/mksquashfs 的 po 目录编译失败 ---
         if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
+            echo "Applying Critical Patches..."
+
+            # --- Fix A: mksquashfs (po 目录报错) ---
             cd $WORK_DIR/trunk/tools/mksquashfs_xz
             sed -i 's/$(MAKE) -C $(XZ_DIR)/sed -i "s\/ po \/ \/g" $(XZ_DIR)\/Makefile; $(MAKE) -C $(XZ_DIR)/g' Makefile
-        fi
-        
-        # --- Fix B: 修复 Dropbear "configure: not found" 和 RPC 问题 ---
-        # 这是导致你上一次失败的核心原因
-        if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
-            echo "Patching Dropbear for Ubuntu 22.04..."
+
+            # --- Fix B: Dropbear (configure 缺失 & RPC 头文件) ---
             cd $WORK_DIR/trunk/user/dropbear
-            
-            # 1. 找到源码目录 (如 dropbear-2019.78)
             DB_SRC_DIR=$(find . -maxdepth 1 -type d -name "dropbear-*" | head -n 1)
-            
             if [ -d "$DB_SRC_DIR" ]; then
-                # 2. 手动生成 configure 脚本 (解决 Error 127)
                 cd "$DB_SRC_DIR"
-                echo "Generating configure script in $DB_SRC_DIR..."
                 autoreconf -ivf
                 cd ..
-                
-                # 3. 修改 Makefile，注入 tirpc 依赖 (解决链接错误)
-                # 原理：在 ./configure 之前加入环境变量，强制包含 /usr/include/tirpc
                 sed -i 's|./configure|export CFLAGS="-I/usr/include/tirpc"; export LIBS="-ltirpc"; ./configure|g' Makefile
-            else
-                echo "Warning: Dropbear source dir not found!"
             fi
+
+            # --- Fix C: e2fsprogs (AM_GNU_GETTEXT 语法错误) ---
+            # 这是解决你刚刚遇到的报错
+            echo "Patching e2fsprogs..."
+            cd $WORK_DIR/trunk/user/e2fsprogs
+            # 1. 强制重新生成 configure，修复语法错误
+            autoreconf -ivf
+            # 2. 强制禁用 NLS (多语言支持)，避免后续 gettext 链接错误
+            # 3. 修复 pkg-config 警告 (可选，防止干扰)
+            sed -i 's/./configure/./configure --disable-nls/g' Makefile
         fi
 
         # =======================================================
@@ -114,7 +112,7 @@ jobs:
           exit 1
         fi
         
-        # 净化插件，减少出错概率
+        # 插件净化 & 优化
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_ARIA=y/CONFIG_FIRMWARE_INCLUDE_ARIA=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=y/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_WGET=y/CONFIG_FIRMWARE_INCLUDE_WGET=n/g' $TEMPLATE_PATH
@@ -124,7 +122,7 @@ jobs:
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_V2RAY=y/CONFIG_FIRMWARE_INCLUDE_V2RAY=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_XRAY=y/CONFIG_FIRMWARE_INCLUDE_XRAY=n/g' $TEMPLATE_PATH
 
-        # 开启硬件加速
+        # 硬件加速
         sed -i 's/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=n/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y/g' $TEMPLATE_PATH
         if ! grep -q "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD" $TEMPLATE_PATH; then
            echo "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y" >> $TEMPLATE_PATH
@@ -162,7 +160,7 @@ jobs:
           Newifi3 D2 自动构建固件
           - 版本: Padavan ${{ env.BUILD_VER }}
           - 编译日期: ${{ env.DATE }}
-          - 修复: Dropbear & xz build fixes applied
+          - 修复: Dropbear, e2fsprogs build fixes
         files: ${{ env.FIRMWARE_PATH }}/*.trx
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
