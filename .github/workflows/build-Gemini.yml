@@ -1,4 +1,4 @@
-name: Build Newifi3 D2 Padavan (Fixed & Optimized)
+name: Build Newifi3 D2 Padavan (Final Fix)
 
 on:
   workflow_dispatch:
@@ -31,22 +31,19 @@ jobs:
           nano xxd fakeroot kmod cpio git-doc vim-common \
           libncurses5-dev libncurses5 \
           python3-docutils autopoint texinfo \
-          libtirpc-dev
+          libtirpc-dev automake autoconf
         sudo apt-get clean
 
     - name: Run Compilation Logic
       run: |
         # =======================================================
-        # 1. 定义变量
+        # 1. 基础变量设置
         # =======================================================
         WORK_DIR="$GITHUB_WORKSPACE/padavan"
         mkdir -p $WORK_DIR
-        
+        TARGET_PROFILE="NEWIFI3"
         CURRENT_DATE=$(date +%Y%m%d)
         echo "DATE=$CURRENT_DATE" >> $GITHUB_ENV
-        
-        # 设定 Newifi3 的目标名称 (hanwckf 源码中默认为 NEWIFI3)
-        TARGET_PROFILE="NEWIFI3"
         
         if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
           REPO_URL="https://github.com/hanwckf/rt-n56u.git"
@@ -65,23 +62,43 @@ jobs:
         git clone --depth=1 --branch $REPO_BRANCH $REPO_URL $WORK_DIR
         
         # =======================================================
-        # 3. 【核心修复】针对 Ubuntu 22.04 的构建补丁
+        # 3. 【关键修复】针对 Ubuntu 22.04 的补丁集
         # =======================================================
-        # 移植 AC2100 脚本的修复逻辑：
-        # 强行修改 Makefile，在编译前移除 "po" 目录，彻底避开 gettext/NLS 报错
+        
+        # --- Fix A: 修复 xz/mksquashfs 的 po 目录编译失败 ---
         if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
-            echo "Applying patch for xz-5.2.4 build on Ubuntu 22.04..."
             cd $WORK_DIR/trunk/tools/mksquashfs_xz
             sed -i 's/$(MAKE) -C $(XZ_DIR)/sed -i "s\/ po \/ \/g" $(XZ_DIR)\/Makefile; $(MAKE) -C $(XZ_DIR)/g' Makefile
-            cd $WORK_DIR
+        fi
+        
+        # --- Fix B: 修复 Dropbear "configure: not found" 和 RPC 问题 ---
+        # 这是导致你上一次失败的核心原因
+        if [[ "${{ inputs.target_version }}" == *"3.4"* ]]; then
+            echo "Patching Dropbear for Ubuntu 22.04..."
+            cd $WORK_DIR/trunk/user/dropbear
+            
+            # 1. 找到源码目录 (如 dropbear-2019.78)
+            DB_SRC_DIR=$(find . -maxdepth 1 -type d -name "dropbear-*" | head -n 1)
+            
+            if [ -d "$DB_SRC_DIR" ]; then
+                # 2. 手动生成 configure 脚本 (解决 Error 127)
+                cd "$DB_SRC_DIR"
+                echo "Generating configure script in $DB_SRC_DIR..."
+                autoreconf -ivf
+                cd ..
+                
+                # 3. 修改 Makefile，注入 tirpc 依赖 (解决链接错误)
+                # 原理：在 ./configure 之前加入环境变量，强制包含 /usr/include/tirpc
+                sed -i 's|./configure|export CFLAGS="-I/usr/include/tirpc"; export LIBS="-ltirpc"; ./configure|g' Makefile
+            else
+                echo "Warning: Dropbear source dir not found!"
+            fi
         fi
 
         # =======================================================
         # 4. 准备 Toolchain
         # =======================================================
-        echo "Preparing Toolchain..."
         cd $WORK_DIR/toolchain-mipsel
-        # 使用源码自带脚本下载，不搞复杂操作
         sh dl_toolchain.sh
         
         # =======================================================
@@ -89,21 +106,15 @@ jobs:
         # =======================================================
         cd $WORK_DIR/trunk
         
-        # 寻找配置文件模板，兼容大小写
         TEMPLATE_PATH="configs/templates/NEWIFI3.config"
-        if [ ! -f "$TEMPLATE_PATH" ]; then
-           TEMPLATE_PATH="configs/templates/newifi3.config"
-        fi
+        [ ! -f "$TEMPLATE_PATH" ] && TEMPLATE_PATH="configs/templates/newifi3.config"
         
         if [ ! -f "$TEMPLATE_PATH" ]; then
-          echo "Error: Config template for Newifi3 not found!"
+          echo "Error: Config template not found!"
           exit 1
         fi
         
-        echo "Using template: $TEMPLATE_PATH"
-        
-        # --- 净化插件 (减少体积，提高编译成功率) ---
-        # 如果你需要某些插件，注释掉对应的行即可
+        # 净化插件，减少出错概率
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_ARIA=y/CONFIG_FIRMWARE_INCLUDE_ARIA=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=y/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_WGET=y/CONFIG_FIRMWARE_INCLUDE_WGET=n/g' $TEMPLATE_PATH
@@ -112,36 +123,27 @@ jobs:
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_TROJAN=y/CONFIG_FIRMWARE_INCLUDE_TROJAN=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_V2RAY=y/CONFIG_FIRMWARE_INCLUDE_V2RAY=n/g' $TEMPLATE_PATH
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_XRAY=y/CONFIG_FIRMWARE_INCLUDE_XRAY=n/g' $TEMPLATE_PATH
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER=y/CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER=n/g' $TEMPLATE_PATH
 
-        # --- 性能优化 ---
-        # 开启 Flow Offload (硬件加速)
+        # 开启硬件加速
         sed -i 's/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=n/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y/g' $TEMPLATE_PATH
         if ! grep -q "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD" $TEMPLATE_PATH; then
            echo "CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y" >> $TEMPLATE_PATH
         fi
         
-        # =======================================================
-        # 6. 生成 .config
-        # =======================================================
         cp -f $TEMPLATE_PATH .config
         
         # =======================================================
-        # 7. 执行编译
+        # 6. 开始编译
         # =======================================================
         echo "Starting Build..."
-        # 清理旧环境
         make clean
-        # 开始编译，build_firmware 脚本会自动处理依赖
         fakeroot ./build_firmware $TARGET_PROFILE
         
     - name: Organize Artifacts
       run: |
         mkdir -p ./output_firmware
-        # 查找 trx 文件，忽略找不到的错误
         cp ${{ github.workspace }}/padavan/trunk/images/*.trx ./output_firmware/ 2>/dev/null || true
         
-        # 检查是否生成了文件
         if [ "$(ls -A ./output_firmware)" ]; then
            echo "FIRMWARE_PATH=./output_firmware" >> $GITHUB_ENV
            echo "Build Success!"
@@ -160,8 +162,7 @@ jobs:
           Newifi3 D2 自动构建固件
           - 版本: Padavan ${{ env.BUILD_VER }}
           - 编译日期: ${{ env.DATE }}
-          - 插件: 纯净版 (已精简)
-          - 硬件加速: 开启
+          - 修复: Dropbear & xz build fixes applied
         files: ${{ env.FIRMWARE_PATH }}/*.trx
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
