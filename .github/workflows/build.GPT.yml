@@ -326,18 +326,18 @@ jobs:
         
         # 生成固件信息文件
         cat > "$WORK_ROOT/firmware/build-info.txt" <<EOF
-固件编译信息
-==================
-机型: Newifi3 D2
-版本: Padavan 3.4 (hanwckf)
-内核: Linux 3.4.x
-编译时间: ${{ env.BUILD_DATE }}
-编译系统: Ubuntu 22.04
-硬件加速: Flow Offload (已启用)
-
-文件列表:
-$(ls -lh "$WORK_ROOT/firmware"/*.trx | awk '{print $9, $5}')
-EOF
+        固件编译信息
+        ==================
+        机型: Newifi3 D2
+        版本: Padavan 3.4 (hanwckf)
+        内核: Linux 3.4.x
+        编译时间: ${{ env.BUILD_DATE }}
+        编译系统: Ubuntu 22.04
+        硬件加速: Flow Offload (已启用)
+        
+        文件列表:
+        $(ls -lh "$WORK_ROOT/firmware"/*.trx | awk '{print $9, $5}')
+        EOF
 
         cat "$WORK_ROOT/firmware/build-info.txt"
         echo "FIRMWARE_PATH=$WORK_ROOT/firmware" >> $GITHUB_ENV
