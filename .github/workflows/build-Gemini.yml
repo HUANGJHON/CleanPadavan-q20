@@ -1,4 +1,4 @@
-name: Build Newifi3 D2 (Gemini Optimized)
+name: Build Newifi3 D2 (Gemini 3 Pro)
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
     # [核心优化] 使用我们构建的专用 Docker 镜像
     # 包含了所有依赖 (gcc, python2/3, ncurses5, toolchain-deps 等)
     container:
-      image: ghcr.io/biaogo94/padavan-builder:latest
+      image: ghcr.io/biaogo94/cleanpadavan-newifi3/padavan-builder:latest
       options: --user root  # 强制 Root 权限以避免权限问题
 
     steps:
