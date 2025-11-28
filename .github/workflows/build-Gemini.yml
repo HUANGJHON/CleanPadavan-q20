@@ -34,24 +34,31 @@ jobs:
     - name: Initialize Environment Variables
       id: init
       run: |
-        if [[ "${{ github.event.inputs.target_version }}" == *"4.4"* ]]; then
-          echo "KERNEL_VER=4.4" >> $GITHUB_ENV
-          echo "REPO_URL=https://github.com/MeIsReallyBa/padavan-4.4.git" >> $GITHUB_ENV
-          echo "REPO_BRANCH=main" >> $GITHUB_ENV
-          echo "TARGET_PROFILE=NEWIFI" >> $GITHUB_ENV
-        else
-          echo "KERNEL_VER=3.4" >> $GITHUB_ENV
-          echo "REPO_URL=https://github.com/hanwckf/rt-n56u.git" >> $GITHUB_ENV
-          echo "REPO_BRANCH=master" >> $GITHUB_ENV
-          echo "TARGET_PROFILE=NEWIFI3" >> $GITHUB_ENV
-        fi
+        # 1. 先把输入赋值给一个 Shell 变量，避免插值语法错误
+        INPUT_VER="${{ github.event.inputs.target_version }}"
+        echo "Debug: User Input is [$INPUT_VER]"
+
+        # 2. 使用 case 语句进行匹配，这是最稳健的写法
+        case "$INPUT_VER" in
+          *"4.4"*)
+            echo "✅ Match: Switching to Kernel 4.4 (MeIsReallyBa)"
+            echo "KERNEL_VER=4.4" >> $GITHUB_ENV
+            echo "REPO_URL=https://github.com/MeIsReallyBa/padavan-4.4.git" >> $GITHUB_ENV
+            echo "REPO_BRANCH=main" >> $GITHUB_ENV
+            echo "TARGET_PROFILE=NEWIFI" >> $GITHUB_ENV
+            ;;
+          *)
+            echo "☑️ Default: Switching to Kernel 3.4 (Hanwckf)"
+            echo "KERNEL_VER=3.4" >> $GITHUB_ENV
+            echo "REPO_URL=https://github.com/hanwckf/rt-n56u.git" >> $GITHUB_ENV
+            echo "REPO_BRANCH=master" >> $GITHUB_ENV
+            echo "TARGET_PROFILE=NEWIFI3" >> $GITHUB_ENV
+            ;;
+        esac
         
+        # 3. 设置通用变量
         echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
         echo "WORK_DIR=${{ github.workspace }}/padavan" >> $GITHUB_ENV
-
-    - name: Clone Source Code
-      run: |
-        git clone --depth=1 --branch ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} ${{ env.WORK_DIR }}
 
     - name: Cache Toolchain
       id: cache-toolchain
