@@ -1,4 +1,4 @@
-name: Build Newifi3 D2 (Gemini 3 Pro)
+name: Build Newifi3 D2 (Gemini Final Restore)
 
 on:
   workflow_dispatch:
@@ -23,8 +23,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    # ⚠️ 请确认下方 image 地址与你实际构建的地址一致
-    # 通常格式为: ghcr.io/用户名(小写)/仓库名(小写)/padavan-builder:latest
+    # 使用你之前构建成功的 Docker 镜像
     container:
       image: ghcr.io/biaogo94/cleanpadavan-newifi3/padavan-builder:latest
       options: --user root
@@ -36,7 +35,6 @@ jobs:
     - name: Initialize Environment Variables
       id: init
       run: |
-        # 判断内核版本并设置变量
         if [[ "${{ github.event.inputs.target_version }}" == *"4.4"* ]]; then
           echo "KERNEL_VER=4.4" >> $GITHUB_ENV
           echo "REPO_URL=https://github.com/MeIsReallyBa/padavan-4.4.git" >> $GITHUB_ENV
@@ -54,7 +52,6 @@ jobs:
 
     - name: Clone Source Code
       run: |
-        echo "Cloning ${{ env.KERNEL_VER }} source from ${{ env.REPO_URL }} ..."
         git clone --depth=1 --branch ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} ${{ env.WORK_DIR }}
 
     - name: Cache Toolchain
@@ -74,40 +71,49 @@ jobs:
       run: |
         mkdir -p /opt/rt-n56u
         sudo ln -sf ${{ env.WORK_DIR }}/toolchain-mipsel /opt/rt-n56u/toolchain-mipsel
-        # 简单验证
-        /opt/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin/mipsel-linux-uclibc-gcc --version || echo "Toolchain verification skipped"
 
-    # --- 3.4 内核专属逻辑 (KVR & Patch) ---
+    # =======================================================
+    # 核心修正：完全回归原始脚本逻辑
+    # =======================================================
     - name: (Kernel 3.4) Apply KVR & Fixes
       if: env.KERNEL_VER == '3.4'
       run: |
         cd ${{ env.WORK_DIR }}
         
-        # 1. 注入 KVR 补丁 (vb1980)
-        echo "Applying KVR patches..."
-
+        # --- 原始 KVR 注入逻辑 (完全复刻) ---
+        echo ">>> Applying KVR patches (Original Logic)..."
+        
         KVR_TEMP="/tmp/padavan_kvr"
-
+        rm -rf $KVR_TEMP
         git clone --depth=1 https://github.com/vb1980/Padavan-KVR.git $KVR_TEMP
-
-        DEST_DRIVER_DIR="$WORK_DIR/trunk/proprietary_driver/rt_wifi"
-
+        
+        # 注意：DEST_DRIVER_DIR 这里要适配当前的 WORK_DIR 路径
+        DEST_DRIVER_DIR="${{ env.WORK_DIR }}/trunk/proprietary_driver/rt_wifi"
+        
+        # 原汁原味的查找命令
         SRC_MT7603=$(find $KVR_TEMP -type d -name "mt7603e*" -print -quit)
-
         SRC_MT7612=$(find $KVR_TEMP -type d -name "mt7612e*" -print -quit)
-
         
-
-        if [ -n "$SRC_MT7603" ]; then rm -rf $DEST_DRIVER_DIR/mt7603e; cp -r "$SRC_MT7603" $DEST_DRIVER_DIR/mt7603e; fi
-
-        if [ -n "$SRC_MT7612" ]; then rm -rf $DEST_DRIVER_DIR/mt7612e; cp -r "$SRC_MT7612" $DEST_DRIVER_DIR/mt7612e; fi
-
-        rm -rf $KVR_TEMP 
-
-        # 2. 修复 build 工具兼容性
+        # 调试输出一下，让人安心
+        echo "Found 7603 at: $SRC_MT7603"
+        echo "Found 7612 at: $SRC_MT7612"
+        
+        if [ -n "$SRC_MT7603" ]; then 
+            echo "Replacing mt7603e..."
+            rm -rf $DEST_DRIVER_DIR/mt7603e
+            cp -r "$SRC_MT7603" $DEST_DRIVER_DIR/mt7603e
+        fi
+        
+        if [ -n "$SRC_MT7612" ]; then 
+            echo "Replacing mt7612e..."
+            rm -rf $DEST_DRIVER_DIR/mt7612e
+            cp -r "$SRC_MT7612" $DEST_DRIVER_DIR/mt7612e
+        fi
+        
+        rm -rf $KVR_TEMP
+        
+        # --- 其他必要的构建修复 ---
         sed -i 's/$(MAKE) -C $(XZ_DIR)/sed -i "s\/ po \/ \/g" $(XZ_DIR)\/Makefile; $(MAKE) -C $(XZ_DIR)/g' trunk/tools/mksquashfs_xz/Makefile
-        
-        # 3. 修复 Dropbear 编译
         sed -i 's|./configure|export CFLAGS="-I/usr/include/tirpc"; export LIBS="-ltirpc"; ./configure|g' trunk/user/dropbear/Makefile
 
     - name: (Kernel 3.4) Configure Target
@@ -120,34 +126,26 @@ jobs:
             cp -f configs/templates/newifi3.config .config
         fi
 
-        # 强制设置驱动版本
+        # 强制设置驱动版本 (配合上面的文件夹替换)
         sed -i 's/CONFIG_FIRMWARE_WIFI2_DRIVER=.*$/CONFIG_FIRMWARE_WIFI2_DRIVER=5.0/g' .config
         sed -i 's/CONFIG_FIRMWARE_WIFI5_DRIVER=.*$/CONFIG_FIRMWARE_WIFI5_DRIVER=3.0/g' .config
         
-        # 确保 KVR 开启
+        # 开启 KVR 宏
         sed -i '/CONFIG_FIRMWARE_INCLUDE_WIFI_KVR/d' .config
         echo "CONFIG_FIRMWARE_INCLUDE_WIFI_KVR=y" >> .config
 
-    # --- 4.4 内核专属逻辑 ---
     - name: (Kernel 4.4) Configure Target
       if: env.KERNEL_VER == '4.4'
       run: |
         cd ${{ env.WORK_DIR }}/trunk
         CONFIG_FILE="configs/boards/${{ env.TARGET_PROFILE }}/board.mk"
-        
         if [ -f "$CONFIG_FILE" ]; then
-            # 开启硬件加速
             sed -i 's/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=n/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y/g' $CONFIG_FILE
-            # 关闭常用插件
             for APP in ARIA TRANSMISSION OPENVPN SMARTDNS TROJAN; do
                 sed -i "s/CONFIG_FIRMWARE_INCLUDE_${APP}=y/CONFIG_FIRMWARE_INCLUDE_${APP}=n/g" $CONFIG_FILE
             done
-        else
-            echo "::error:: Config file $CONFIG_FILE not found!"
-            exit 1
         fi
 
-    # --- 通用清理与配置 ---
     - name: Common Customization
       run: |
         cd ${{ env.WORK_DIR }}/trunk
@@ -156,37 +154,28 @@ jobs:
              sed -i 's/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=y/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n/g' .config
              sed -i 's/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=n/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y/g' .config
              
-             # [重要] 禁用 RTL-SDR 以避免 cmake 依赖报错
+             # 禁用 RTL-SDR 以防 cmake 报错
              sed -i 's/CONFIG_FIRMWARE_INCLUDE_RTL_SDR=y/CONFIG_FIRMWARE_INCLUDE_RTL_SDR=n/g' .config
         fi
 
-    # --- 核心编译 ---
     - name: Compile Firmware
       run: |
         cd ${{ env.WORK_DIR }}/trunk
         ./clear_tree || true
         
-        echo "Building for ${{ env.TARGET_PROFILE }}..."
-        
-        # 1. 执行编译
+        echo "Building..."
         fakeroot ./build_firmware ${{ env.TARGET_PROFILE }}
         
-        # 2. 立即检查产物
         if [ ! -f images/*.trx ]; then
-            echo "::error:: ❌ Compilation failed! No .trx file generated."
+            echo "::error:: Compilation failed! No .trx file generated."
             exit 1
-        else
-            echo "✅ Compilation successful. Firmware found."
         fi
 
-    # --- 整理产物 ---
     - name: Organize Artifacts
       run: |
         mkdir -p ${{ env.FIRMWARE_PATH }}
         find ${{ env.WORK_DIR }}/trunk/images -name "*.trx" -exec cp {} ${{ env.FIRMWARE_PATH }}/ \;
-        ls -lh ${{ env.FIRMWARE_PATH }}
 
-    # --- 上传 Release ---
     - name: Upload Firmware to Release
       uses: softprops/action-gh-release@v1
       if: success()
@@ -194,21 +183,8 @@ jobs:
         tag_name: v${{ env.BUILD_DATE }}-${{ env.KERNEL_VER }}
         name: Newifi3 D2 Padavan ${{ env.KERNEL_VER }} (${{ env.BUILD_DATE }})
         body: |
-          ### 🚀 Newifi3 D2 自动构建 (修复版)
-          
-          | 信息 | 说明 |
-          | :--- | :--- |
-          | **内核版本** | ${{ env.KERNEL_VER }} |
-          | **源码仓库** | ${{ env.REPO_URL }} |
-          | **构建日期** | ${{ env.BUILD_DATE }} |
-          
-          ### ✨ 特性
-          * ⚡ **Flow Offload**: 已开启
-          * 📶 **WIFI KVR**: ${{ env.KERNEL_VER == '3.4' && '✅ 支持 (vb1980 patch)' || '⚠️ 原生' }}
-          * 🧹 **精简版**: 移除 Aria2/Transmission/RTL-SDR
-          
-          ### 🛠 使用方法
-          在 Breed Web 恢复控制台中上传 `.trx` 文件进行更新。
+           Newifi3 D2 Padavan Auto Build
+           Kernel: ${{ env.KERNEL_VER }}
         files: ${{ env.FIRMWARE_PATH }}/*.trx
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
