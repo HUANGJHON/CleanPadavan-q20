@@ -17,7 +17,6 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
-  # 删除 FIRMWARE_PATH 环境变量，改用局部相对路径
 
 jobs:
   build:
@@ -31,24 +30,23 @@ jobs:
     - name: Checkout CI Scripts
       uses: actions/checkout@v4
 
+    # [关键修复] 使用 case 语句确保 4.4 版本变量(分支、URL)正确赋值
     - name: Initialize Environment Variables
       id: init
       run: |
-        # 1. 先把输入赋值给一个 Shell 变量，避免插值语法错误
         INPUT_VER="${{ github.event.inputs.target_version }}"
-        echo "Debug: User Input is [$INPUT_VER]"
+        echo "User Input: $INPUT_VER"
 
-        # 2. 使用 case 语句进行匹配，这是最稳健的写法
         case "$INPUT_VER" in
           *"4.4"*)
-            echo "✅ Match: Switching to Kernel 4.4 (MeIsReallyBa)"
+            echo "✅ Mode: Kernel 4.4 (MeIsReallyBa)"
             echo "KERNEL_VER=4.4" >> $GITHUB_ENV
             echo "REPO_URL=https://github.com/MeIsReallyBa/padavan-4.4.git" >> $GITHUB_ENV
             echo "REPO_BRANCH=main" >> $GITHUB_ENV
             echo "TARGET_PROFILE=NEWIFI" >> $GITHUB_ENV
             ;;
           *)
-            echo "☑️ Default: Switching to Kernel 3.4 (Hanwckf)"
+            echo "☑️ Mode: Kernel 3.4 (Hanwckf)"
             echo "KERNEL_VER=3.4" >> $GITHUB_ENV
             echo "REPO_URL=https://github.com/hanwckf/rt-n56u.git" >> $GITHUB_ENV
             echo "REPO_BRANCH=master" >> $GITHUB_ENV
@@ -56,28 +54,58 @@ jobs:
             ;;
         esac
         
-        # 3. 设置通用变量
         echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
         echo "WORK_DIR=${{ github.workspace }}/padavan" >> $GITHUB_ENV
 
+    # 拉取源码
+    - name: Clone Source Code
+      run: |
+        echo "Cloning form ${{ env.REPO_URL }} (Branch: ${{ env.REPO_BRANCH }})..."
+        git clone --depth=1 --branch ${{ env.REPO_BRANCH }} ${{ env.REPO_URL }} ${{ env.WORK_DIR }}
+
+    # [优化] 缓存 Key 改用纯文本版本号，更稳健
     - name: Cache Toolchain
       id: cache-toolchain
       uses: actions/cache@v4
       with:
         path: ${{ env.WORK_DIR }}/toolchain-mipsel
-        key: toolchain-${{ env.KERNEL_VER }}-${{ hashFiles(format('{0}/toolchain-mipsel/dl_toolchain.sh', env.WORK_DIR)) }}
+        key: pkg-toolchain-${{ env.KERNEL_VER }}
 
+    # [逻辑完善] 优先使用自带脚本，自带脚本不存在才手动下载
     - name: Prepare Toolchain
       if: steps.cache-toolchain.outputs.cache-hit != 'true'
       run: |
+        mkdir -p ${{ env.WORK_DIR }}/toolchain-mipsel
         cd ${{ env.WORK_DIR }}/toolchain-mipsel
-        sh dl_toolchain.sh
+        
+        echo "Checking for downloader script..."
+        ls -lh dl_toolchain.sh || echo "Script not listed."
+
+        if [ -f "dl_toolchain.sh" ]; then
+            echo "✅ Script found! Executing dl_toolchain.sh..."
+            sh dl_toolchain.sh
+        else
+            echo "⚠️ Script NOT found. Downloading toolchain manually (Fallback)..."
+            wget -O toolchain.tar.xz https://github.com/hanwckf/padavan-toolchain/releases/download/v1.1/mipsel-linux-uclibc.tar.xz
+            tar -xvf toolchain.tar.xz
+            rm -f toolchain.tar.xz
+            
+            if [ -d "toolchain-3.4.x" ]; then
+                echo "✅ Toolchain extracted."
+            else
+                echo "::error:: Toolchain failed to extract."
+                exit 1
+            fi
+        fi
 
     - name: Link Toolchain
       run: |
         mkdir -p /opt/rt-n56u
         sudo ln -sf ${{ env.WORK_DIR }}/toolchain-mipsel /opt/rt-n56u/toolchain-mipsel
+        # 验证一下
+        ls -l /opt/rt-n56u/toolchain-mipsel
 
+    # --- 3.4 内核 KVR 逻辑 ---
     - name: (Kernel 3.4) Apply KVR & Fixes
       if: env.KERNEL_VER == '3.4'
       run: |
@@ -89,18 +117,15 @@ jobs:
         git clone --depth=1 https://github.com/vb1980/Padavan-KVR.git $KVR_TEMP
         
         DEST_DRIVER_DIR="${{ env.WORK_DIR }}/trunk/proprietary_driver/rt_wifi"
-        
         SRC_MT7603=$(find $KVR_TEMP -type d -name "mt7603e*" -print -quit)
         SRC_MT7612=$(find $KVR_TEMP -type d -name "mt7612e*" -print -quit)
         
         if [ -n "$SRC_MT7603" ]; then 
-            echo "Replacing mt7603e..."
             rm -rf $DEST_DRIVER_DIR/mt7603e
             cp -r "$SRC_MT7603" $DEST_DRIVER_DIR/mt7603e
         fi
         
         if [ -n "$SRC_MT7612" ]; then 
-            echo "Replacing mt7612e..."
             rm -rf $DEST_DRIVER_DIR/mt7612e
             cp -r "$SRC_MT7612" $DEST_DRIVER_DIR/mt7612e
         fi
@@ -114,29 +139,38 @@ jobs:
       if: env.KERNEL_VER == '3.4'
       run: |
         cd ${{ env.WORK_DIR }}/trunk
+        # 复制配置文件
         if [ -f "configs/templates/NEWIFI3.config" ]; then
             cp -f configs/templates/NEWIFI3.config .config
         else
             cp -f configs/templates/newifi3.config .config
         fi
 
+        # 修改驱动版本和开启 KVR
         sed -i 's/CONFIG_FIRMWARE_WIFI2_DRIVER=.*$/CONFIG_FIRMWARE_WIFI2_DRIVER=5.0/g' .config
         sed -i 's/CONFIG_FIRMWARE_WIFI5_DRIVER=.*$/CONFIG_FIRMWARE_WIFI5_DRIVER=3.0/g' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_WIFI_KVR/d' .config
         echo "CONFIG_FIRMWARE_INCLUDE_WIFI_KVR=y" >> .config
 
+    # --- 4.4 内核配置逻辑 ---
     - name: (Kernel 4.4) Configure Target
       if: env.KERNEL_VER == '4.4'
       run: |
         cd ${{ env.WORK_DIR }}/trunk
         CONFIG_FILE="configs/boards/${{ env.TARGET_PROFILE }}/board.mk"
+        
+        echo "Modifying config: $CONFIG_FILE"
         if [ -f "$CONFIG_FILE" ]; then
             sed -i 's/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=n/CONFIG_FIRMWARE_ENABLE_FLOWOFFLOAD=y/g' $CONFIG_FILE
             for APP in ARIA TRANSMISSION OPENVPN SMARTDNS TROJAN; do
                 sed -i "s/CONFIG_FIRMWARE_INCLUDE_${APP}=y/CONFIG_FIRMWARE_INCLUDE_${APP}=n/g" $CONFIG_FILE
             done
+        else
+            echo "::error:: Board Config file not found!"
+            exit 1
         fi
 
+    # --- 通用清理 ---
     - name: Common Customization
       run: |
         cd ${{ env.WORK_DIR }}/trunk
@@ -155,7 +189,6 @@ jobs:
         echo "Building..."
         fakeroot ./build_firmware ${{ env.TARGET_PROFILE }}
         
-        # 检查是否真的生成了 TRX 文件
         if [ ! -f images/*.trx ]; then
             echo "::error:: Compilation failed! No .trx file generated."
             exit 1
@@ -163,13 +196,9 @@ jobs:
 
     - name: Organize Artifacts
       run: |
-        # 创建 output_firmware 目录（相对路径）
+        # 使用相对路径 output_firmware
         mkdir -p output_firmware
-        
-        # 将生成的固件复制过去
         find ${{ env.WORK_DIR }}/trunk/images -name "*.trx" -exec cp {} output_firmware/ \;
-        
-        # 打印一下看看
         ls -lh output_firmware/
 
     - name: Upload Firmware to Release
@@ -181,7 +210,7 @@ jobs:
         body: |
            Newifi3 D2 Padavan Auto Build
            Kernel: ${{ env.KERNEL_VER }}
-        # 使用相对路径匹配，这在容器环境中是最稳的
+        # 相对路径匹配
         files: output_firmware/*.trx
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
