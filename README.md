@@ -26,7 +26,7 @@
 5.  **关键步骤**：在下拉菜单 `Select Kernel Version` 中选择：
       * `3.4 (Hanwckf + KVR + 22.04 Fix)`: 推荐。稳定、信号好、支持 KVR 漫游。
       * `4.4 (MeIsReallyBa + Docker)`: 尝鲜。新内核，插件支持更丰富（但在本纯净脚本中已精简）。
-6.  等待编译完成（约 15 分钟）。
+6.  等待编译完成（约 20 分钟）。
 7.  前往仓库的 **Releases** 页面下载对应日期的固件（`.trx` 文件）。
 
 ## ⚙️ 默认配置 (Default Settings)
