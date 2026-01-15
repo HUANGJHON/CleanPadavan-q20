@@ -116,7 +116,7 @@ jobs:
         rm -rf $KVR_TEMP
         git clone --depth=1 https://github.com/vb1980/Padavan-KVR.git $KVR_TEMP
         
-        DEST_DRIVER_DIR="${{ env.WORK_DIR }}/trunk/proprietary_driver/rt_wifi"
+        DEST_DRIVER_DIR="${{ env.WORK_DIR }}/trunk/proprietary/rt_wifi"
         SRC_MT7915=$(find $KVR_TEMP -type d -name "mt7915*" -print -quit)
         
         if [ -n "$SRC_MT7915" ]; then 
