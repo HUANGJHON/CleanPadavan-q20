@@ -50,7 +50,7 @@ jobs:
             echo "KERNEL_VER=3.4" >> $GITHUB_ENV
             echo "REPO_URL=https://github.com/hanwckf/rt-n56u.git" >> $GITHUB_ENV
             echo "REPO_BRANCH=master" >> $GITHUB_ENV
-            echo "TARGET_PROFILE=NEWIFI3" >> $GITHUB_ENV
+            echo "TARGET_PROFILE=CR660x" >> $GITHUB_ENV
             ;;
         esac
         
@@ -117,17 +117,11 @@ jobs:
         git clone --depth=1 https://github.com/vb1980/Padavan-KVR.git $KVR_TEMP
         
         DEST_DRIVER_DIR="${{ env.WORK_DIR }}/trunk/proprietary_driver/rt_wifi"
-        SRC_MT7603=$(find $KVR_TEMP -type d -name "mt7603e*" -print -quit)
-        SRC_MT7612=$(find $KVR_TEMP -type d -name "mt7612e*" -print -quit)
+        SRC_MT7915=$(find $KVR_TEMP -type d -name "mt7915*" -print -quit)
         
-        if [ -n "$SRC_MT7603" ]; then 
-            rm -rf $DEST_DRIVER_DIR/mt7603e
-            cp -r "$SRC_MT7603" $DEST_DRIVER_DIR/mt7603e
-        fi
-        
-        if [ -n "$SRC_MT7612" ]; then 
-            rm -rf $DEST_DRIVER_DIR/mt7612e
-            cp -r "$SRC_MT7612" $DEST_DRIVER_DIR/mt7612e
+        if [ -n "$SRC_MT7915" ]; then 
+            rm -rf $DEST_DRIVER_DIR/mt7915
+            cp -r "$SRC_MT7915" $DEST_DRIVER_DIR/mt7915
         fi
         
         rm -rf $KVR_TEMP
@@ -140,15 +134,15 @@ jobs:
       run: |
         cd ${{ env.WORK_DIR }}/trunk
         # 复制配置文件
-        if [ -f "configs/templates/NEWIFI3.config" ]; then
-            cp -f configs/templates/NEWIFI3.config .config
+        if [ -f "configs/templates/CR660x.config" ]; then
+            cp -f configs/templates/CR660x.config .config
         else
-            cp -f configs/templates/newifi3.config .config
+            cp -f configs/templates/cr660x.config .config
         fi
 
         # 修改驱动版本和开启 KVR
-        sed -i 's/CONFIG_FIRMWARE_WIFI2_DRIVER=.*$/CONFIG_FIRMWARE_WIFI2_DRIVER=5.0/g' .config
-        sed -i 's/CONFIG_FIRMWARE_WIFI5_DRIVER=.*$/CONFIG_FIRMWARE_WIFI5_DRIVER=3.0/g' .config
+        sed -i 's/CONFIG_FIRMWARE_WIFI2_DRIVER=.*$/CONFIG_FIRMWARE_WIFI2_DRIVER=7.3/g' .config
+        sed -i 's/CONFIG_FIRMWARE_WIFI5_DRIVER=.*$/CONFIG_FIRMWARE_WIFI5_DRIVER=7.3/g' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_WIFI_KVR/d' .config
         echo "CONFIG_FIRMWARE_INCLUDE_WIFI_KVR=y" >> .config
 
