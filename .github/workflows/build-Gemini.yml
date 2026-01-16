@@ -48,9 +48,9 @@ jobs:
           *)
             echo "☑️ Mode: Kernel 3.4 (Hanwckf)"
             echo "KERNEL_VER=3.4" >> $GITHUB_ENV
-            echo "REPO_URL=https://github.com/hanwckf/rt-n56u.git" >> $GITHUB_ENV
+            echo "REPO_URL=https://github.com/HUANGJHON/rt-n56u.git" >> $GITHUB_ENV
             echo "REPO_BRANCH=master" >> $GITHUB_ENV
-            echo "TARGET_PROFILE=CR660x" >> $GITHUB_ENV
+            echo "TARGET_PROFILE=JCG-Q20" >> $GITHUB_ENV
             ;;
         esac
         
@@ -134,15 +134,13 @@ jobs:
       run: |
         cd ${{ env.WORK_DIR }}/trunk
         # 复制配置文件
-        if [ -f "configs/templates/CR660x.config" ]; then
-            cp -f configs/templates/CR660x.config .config
+        if [ -f "configs/templates/JCG-Q20.config" ]; then
+            cp -f configs/templates/JCG-Q20.config .config
         else
-            cp -f configs/templates/cr660x.config .config
+            cp -f configs/templates/jcg-q20.config .config
         fi
 
         # 修改驱动版本和开启 KVR
-        sed -i 's/CONFIG_FIRMWARE_WIFI2_DRIVER=.*$/CONFIG_FIRMWARE_WIFI2_DRIVER=7.3/g' .config
-        sed -i 's/CONFIG_FIRMWARE_WIFI5_DRIVER=.*$/CONFIG_FIRMWARE_WIFI5_DRIVER=7.3/g' .config
         sed -i '/CONFIG_FIRMWARE_INCLUDE_WIFI_KVR/d' .config
         echo "CONFIG_FIRMWARE_INCLUDE_WIFI_KVR=y" >> .config
 
